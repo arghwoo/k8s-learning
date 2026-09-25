@@ -1,0 +1,10 @@
+apiVersion: v2
+name: sample-app
+description: 教學用 Helm Chart：單 workload + Ingress + Service + ConfigMap + PVC + HPA
+type: application
+version: 0.1.0
+appVersion: "1.27"
+keywords:
+  - learning
+  - helm
+  - kubernetes

@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+#
+# chart-diagram — Helm Chart → rendered YAML → topology 圖 (SVG + PNG)
+#
+# 流程（對應 k8s-helm-learning-bootstrap.md）：
+#   1. 檢查 Chart dependencies（必要時自動 helm dependency update，只下載 chart，不碰 cluster）
+#   2. helm lint（警告會顯示，但不會中斷）
+#   3. helm template  →  rendered/<release>-rendered.yaml
+#   4. KubeDiagrams   →  diagrams/<release>.svg
+#   5. kube-diagrams  →  diagrams/<release>.png
+#
+# 安全原則：只使用 helm template / lint / dependency update。
+# 絕不執行 helm install / helm upgrade / kubectl apply 等會動到 cluster 的指令。
+#
+# 用法：
+#   ./bin/chart-diagram <chart-path> [release-name] [options]
+#
+# 範例：
+#   ./bin/chart-diagram ./charts/sample-app
+#   ./bin/chart-diagram ./charts/my-chart my-app -f values-dev.yaml -s image.tag=latest
+#
+# Options:
+#   -f, --values FILE     額外 values 檔，可重複（對應 helm template -f）
+#   -s, --set KEY=VALUE   設定單一值，可重複（對應 helm template --set）
+#   -n, --namespace NS    用 namespace render
+#   -o, --output-dir DIR  圖輸出目錄（預設 ./diagrams）
+#
+#       --rendered-dir D  rendered.yaml 輸出目錄（預設 ./rendered）
+#       --no-png          只產 SVG
+#       --skip-lint       跳過 helm lint
+#
+set -euo pipefail
+
+# --- 基本設定 ---------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+KUBEDIAGRAMS="$ROOT_DIR/.venv/bin/kube-diagrams"
+
+usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+
+die() { echo "error: $*" >&2; exit 1; }
+
+# --- 參數解析 ---------------------------------------------------------------
+
+CHART_PATH=""
+RELEASE=""
+VALUES_FILES=()
+SET_ARGS=()
+NAMESPACE=""
+OUTPUT_DIR="$ROOT_DIR/diagrams"
+RENDERED_DIR="$ROOT_DIR/rendered"
+MAKE_PNG=1
+DO_LINT=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -f|--values)      VALUES_FILES+=("$2"); shift 2 ;;
+    -s|--set)         SET_ARGS+=("$2"); shift 2 ;;
+    -n|--namespace)   NAMESPACE="$2"; shift 2 ;;
+    -o|--output-dir)  OUTPUT_DIR="$2"; shift 2 ;;
+    --rendered-dir)   RENDERED_DIR="$2"; shift 2 ;;
+    --no-png)         MAKE_PNG=0; shift ;;
+    --skip-lint)      DO_LINT=0; shift ;;
+    -h|--help)        usage; exit 0 ;;
+    -*)               die "unknown option: $1 (see --help)" ;;
+    *)
+      if [[ -z "$CHART_PATH" ]]; then CHART_PATH="$1"
+      elif [[ -z "$RELEASE" && ! -d "$1" ]]; then RELEASE="$1"
+      else die "unexpected argument: $1"
+      fi
+      shift ;;
+  esac
+done
+
+[[ -n "$CHART_PATH" ]] || { usage; exit 1; }
+[[ -f "$CHART_PATH/Chart.yaml" ]] || die "not a Helm chart (missing Chart.yaml): $CHART_PATH"
+CHART_PATH="$(cd "$CHART_PATH" && pwd)"
+[[ -n "$RELEASE" ]] || RELEASE="$(grep -E '^name:' "$CHART_PATH/Chart.yaml" | awk '{print $2}' | tr -d '"')"
+[[ -n "$RELEASE" ]] || die "could not derive release name from Chart.yaml; pass one explicitly"
+
+# --- 前置檢查 ---------------------------------------------------------------
+
+command -v helm >/dev/null || die "helm not found. Install: brew install helm"
+[[ -x "$KUBEDIAGRAMS" ]] || die "kube-diagrams not found in .venv. Setup: brew install graphviz pkgconf && CFLAGS=\"-I/opt/homebrew/opt/graphviz/include\" LDFLAGS=\"-L/opt/homebrew/opt/graphviz/lib\" python3 -m venv .venv && .venv/bin/pip install pygraphviz==1.14 kubediagrams"
+
+mkdir -p "$OUTPUT_DIR" "$RENDERED_DIR"
+
+step() { echo; echo "==> $*"; }
+note() { echo "    $*"; }
+
+# --- 1. Dependencies --------------------------------------------------------
+
+step "1/5 Checking chart dependencies"
+if grep -qE '^dependencies:' "$CHART_PATH/Chart.yaml" 2>/dev/null; then
+  helm dependency list "$CHART_PATH" || true
+  if ! ls "$CHART_PATH"/charts/*.tgz >/dev/null 2>&1; then
+    note "dependencies declared but charts/*.tgz missing → running helm dependency update (只下載 chart)"
+    helm dependency update "$CHART_PATH" || die "helm dependency update failed"
+  else
+    note "dependency .tgz already present"
+  fi
+else
+  note "no dependencies declared"
+fi
+
+# --- 2. Lint ----------------------------------------------------------------
+
+HELM_TEMPLATE_ARGS=("$CHART_PATH")
+for f in "${VALUES_FILES[@]+"${VALUES_FILES[@]}"}"; do HELM_TEMPLATE_ARGS+=(-f "$f"); done
+for s in "${SET_ARGS[@]+"${SET_ARGS[@]}"}"; do HELM_TEMPLATE_ARGS+=(--set "$s"); done
+[[ -n "$NAMESPACE" ]] && HELM_TEMPLATE_ARGS+=(--namespace "$NAMESPACE")
+
+if [[ $DO_LINT -eq 1 ]]; then
+  step "2/5 helm lint"
+  LINT_OUTPUT="$(helm lint "$CHART_PATH" "${HELM_TEMPLATE_ARGS[@]}" 2>&1 || true)"
+  echo "$LINT_OUTPUT"
+  if echo "$LINT_OUTPUT" | grep -qE '0 chart\(s\) failed|chart\(s\) validated'; then
+    note "lint OK"
+  else
+    note "lint reported problems (繼續 render，自行判斷是否為誤報)"
+  fi
+else
+  step "2/5 helm lint (skipped)"
+fi
+
+# --- 3. Render --------------------------------------------------------------
+
+RENDERED_FILE="$RENDERED_DIR/$RELEASE-rendered.yaml"
+step "3/5 helm template → ${RENDERED_FILE#$ROOT_DIR/}"
+helm template "$RELEASE" "${HELM_TEMPLATE_ARGS[@]}" > "$RENDERED_FILE"
+[[ -s "$RENDERED_FILE" ]] || die "helm template produced empty output"
+
+step "    rendered kinds:"
+grep '^kind:' "$RENDERED_FILE" | sed 's/^kind: /      /' | sort | uniq -c | sort -rn
+
+# --- 4. Diagram (SVG) -------------------------------------------------------
+
+SVG_FILE="$OUTPUT_DIR/$RELEASE.svg"
+step "4/5 KubeDiagrams → ${SVG_FILE#$ROOT_DIR/}"
+"$KUBEDIAGRAMS" "$RENDERED_FILE" -o "$SVG_FILE" -f svg --embed-all-icons || die "kube-diagrams render failed"
+
+# --- 5. PNG -----------------------------------------------------------------
+
+if [[ $MAKE_PNG -eq 1 ]]; then
+  PNG_FILE="$OUTPUT_DIR/$RELEASE.png"
+  step "5/5 kube-diagrams → ${PNG_FILE#$ROOT_DIR/}"
+  "$KUBEDIAGRAMS" "$RENDERED_FILE" -o "$PNG_FILE" -f png || die "kube-diagrams PNG render failed"
+else
+  step "5/5 PNG skipped (--no-png)"
+fi
+
+# --- 結果 -------------------------------------------------------------------
+
+echo
+echo "Done. Outputs:"
+echo "  rendered YAML : ${RENDERED_FILE#$ROOT_DIR/}"
+echo "  SVG           : ${SVG_FILE#$ROOT_DIR/}"
+if [[ $MAKE_PNG -eq 1 ]]; then
+  echo "  PNG           : ${PNG_FILE#$ROOT_DIR/}"
+fi
+echo
+echo "下一步（bootstrap §10）：把 Chart.yaml、values.yaml、rendered YAML、這張圖"
+echo "一起交給本地 LLM，用 bootstrap §11 的 prompt 分析。"

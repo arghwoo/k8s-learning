@@ -1,0 +1,12 @@
+# 生成物（可隨時用 ./bin/chart-diagram 重新產生）
+rendered/
+diagrams/
+
+# Python venv
+.venv/
+
+# Helm dependency 下載
+charts/*/charts/*.tgz
+charts/*/Chart.lock
+
+.DS_Store

@@ -1,0 +1,49 @@
+# 每個 value 都對應到 templates/ 裡的某個 {{ .Values.xxx }}。
+# 改這裡 → 重新 render → 圖就會變，這是理解 "Helm values → manifests" 的最短路徑。
+
+replicaCount: 2
+
+image:
+  repository: nginx
+  tag: "1.27"
+  pullPolicy: IfNotPresent
+
+# Service 的 selector 必須 match Deployment pod template 的 labels，
+# 否則理論上 endpoints 會是 0 個（bootstrap Step 4 的重點）。
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: sample-app.local
+  path: /
+  port: 80
+
+# 會透過 envFrom 注入到 container 的環境變數
+config:
+  greeting: Hello from sample-app
+  logLevel: info
+
+# 持久化存儲：Pod 掛到 /usr/share/nginx/html
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+
+# HPA：只表示「configuration 允許 scale」，不代表 runtime 正在 scale
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+resources:
+  limits:
+    cpu: 250m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi

@@ -1,0 +1,10 @@
+{{- if .Values.ingress.enabled }}
+外部流量（configuration 層級，非 runtime 事實）：
+
+  client → Ingress ({{ .Values.ingress.host }})
+         → Service {{ include "sample-app.fullname" . }}:{{ .Values.ingress.port }}
+         → Pods (selector: app.kubernetes.io/name={{ .Chart.Name }})
+{{- else }}
+沒有 Ingress。這個 release 只能透過 kubectl port-forward
+或 Service 名稱在 cluster 內部存取（假設已部署）。
+{{- end }}
