@@ -54,6 +54,19 @@ notes/     你的 LLM 分析筆記
 一起交給本地 LLM，用 bootstrap §11 的「Kubernetes Architecture Learning Agent」
 prompt 分析，結果寫進 `notes/`。
 
+## Skill：自動講解 chart
+
+`skills/helm-chart-analyzer/` 是一個 [Agent Skill](https://agentskills.io/)，
+把上面的流程自動化：指向某個 chart 目錄，agent 會 render、畫圖、
+照 bootstrap §11 做架構講解 + 優缺點檢查表，報告寫進 `notes/`。
+
+```text
+你：用 helm-chart-analyzer 分析 charts/my-chart
+agent：跑 bin/chart-diagram → 讀 chart+rendered+圖 → notes/my-chart-<date>.md
+```
+
+硬性限制跟本 repo 一樣：靜態 render only，不碰 cluster、不改 chart。
+
 ## Credits / 參考工具
 
 本 repo 不含任何第三方程式碼；以下工具是外部依賴（CLI 或 `.venv/` 內的 pip 套件，
